@@ -1,0 +1,41 @@
+CREATE SCHEMA simple_catalog;
+CREATE EXTENSION simple WITH SCHEMA simple_catalog;
+CREATE TABLE basic_foo (a int);
+CALL add_note('basic_foo', 'Just a note');
+\d
+         List of relations
+ Schema |   Name    | Type  | Owner 
+--------+-----------+-------+-------
+ public | basic_foo | table | root
+(1 row)
+
+\d simple_catalog.*
+           Table "simple_catalog.objects"
+ Column  |   Type   | Collation | Nullable | Default 
+---------+----------+-----------+----------+---------
+ objoid  | regclass |           | not null | 
+ objnote | json     |           |          | 
+Indexes:
+    "objects_pkey" PRIMARY KEY, btree (objoid)
+
+  Index "simple_catalog.objects_pkey"
+ Column |   Type   | Key? | Definition 
+--------+----------+------+------------
+ objoid | regclass | yes  | objoid
+primary key, btree, for table "simple_catalog.objects"
+
+         Table "simple_catalog.tmp_objects"
+ Column  |   Type   | Collation | Nullable | Default 
+---------+----------+-----------+----------+---------
+ objoid  | regclass |           | not null | 
+ objnote | text     |           |          | 
+
+SELECT * FROM simple_catalog.objects;
+  objoid   |         objnote          
+-----------+--------------------------
+ basic_foo | {"note" : "Just a note"}
+(1 row)
+
+DROP EXTENSION simple;
+DROP SCHEMA simple_catalog;
+DROP TABLE basic_foo;
