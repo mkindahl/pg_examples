@@ -1,33 +1,25 @@
 # PostgreSQL Examples
 
-Repository with PostgreSQL example extensions mostly used for testing.
+Repository with PostgreSQL example extensions mostly used for
+testing. It contains experiments on permission handling and
+extensions, some tests on how to use internal functions and how to
+accomplish different results, and example solutions for how to solve
+particular problems.
 
-## `reporter.c`: run background worker regularly
+## Building and installing
 
-This is to test that we can create a background worker that restarts
-on a regular basis. It can be used for sending telemetry reports, for
-example.
+To build, install, and run tests
 
-The reporter uses the fact that you can set a restart time for the
-background worker and if it exits with a non-zero status, it will be
-started again at a later time.
+```bash
+make
+[sudo] make install
+make installcheck
+```
 
-This it is already used for the logical replication worker, so we are
-just doing the same here.
+## Documentation
 
-### Configuration
-
-| **Configuration**          | **Description**                                |
-|:---------------------------|:-----------------------------------------------|
-| `reporter.database`        | Database to connect to and collect information |
-| `reporter.report_interval` | Report interval in seconds                     |
-
-
-### Files
-
-| **File**            | **Description**        |
-|:--------------------|:-----------------------|
-| `reporter--0.1.sql` | Install script         |
-| `reporter.control`  | Extension control file |
-| `reporter.c`        | C implementation file  |
+* [Extension `reporter`](docs/reporter.md) is an example of how to run
+  background worker regularly.
+* [Extension `simple`](docs/simple.md) demonstrates a problem with
+  permissions and extensions that was brought up in `pgsql-bugs`
 

@@ -1,3 +1,3 @@
-comment = 'Simple test of heap scanning'
+comment = 'Various manipulation functions'
 default_version = '0.1'
 relocatable = true
