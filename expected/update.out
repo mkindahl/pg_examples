@@ -3,12 +3,26 @@ CREATE EXTENSION simple WITH VERSION '1.0' SCHEMA simple_catalog;
 CREATE ROLE reader;
 GRANT SELECT ON ALL TABLES IN SCHEMA simple_catalog TO reader;
 ALTER DEFAULT PRIVILEGES IN SCHEMA simple_catalog GRANT SELECT ON TABLES TO reader;
+SELECT nspname, defaclacl FROM pg_namespace ns JOIN pg_default_acl ON ns.oid = defaclnamespace;
+    nspname     |    defaclacl    
+----------------+-----------------
+ simple_catalog | {reader=r/mats}
+(1 row)
+
 SELECT nspname, relname, relacl, privtype, initprivs
 FROM pg_class cl JOIN pg_namespace ns ON ns.oid = relnamespace LEFT JOIN pg_init_privs ON objoid = cl.oid
 WHERE relname = 'objects';
     nspname     | relname |                  relacl                   | privtype |          initprivs          
 ----------------+---------+-------------------------------------------+----------+-----------------------------
- simple_catalog | objects | {root=arwdDxt/root,=r/root,reader=r/root} | e        | {root=arwdDxt/root,=r/root}
+ simple_catalog | objects | {mats=arwdDxt/mats,=r/mats,reader=r/mats} | e        | {mats=arwdDxt/mats,=r/mats}
+(1 row)
+
+SELECT nspname, nspacl, privtype, initprivs
+FROM pg_namespace ns LEFT JOIN pg_init_privs ON objoid = ns.oid
+WHERE nspname = 'simple_catalog';
+    nspname     | nspacl | privtype | initprivs 
+----------------+--------+----------+-----------
+ simple_catalog |        |          | 
 (1 row)
 
 CREATE TABLE update_foo (a int);
@@ -26,12 +40,20 @@ SELECT * FROM simple_catalog.objects;
  update_foo | {"note" : "Just a note"}
 (1 row)
 
+SELECT nspname, nspacl, privtype, initprivs
+FROM pg_namespace ns LEFT JOIN pg_init_privs ON objoid = ns.oid
+WHERE nspname = 'simple_catalog';
+    nspname     | nspacl | privtype | initprivs 
+----------------+--------+----------+-----------
+ simple_catalog |        |          | 
+(1 row)
+
 SELECT nspname, relname, relacl, privtype, initprivs
 FROM pg_class cl JOIN pg_namespace ns ON ns.oid = relnamespace LEFT JOIN pg_init_privs ON objoid = cl.oid
 WHERE relname = 'objects';
     nspname     | relname |                  relacl                   | privtype |                 initprivs                 
 ----------------+---------+-------------------------------------------+----------+-------------------------------------------
- simple_catalog | objects | {root=arwdDxt/root,reader=r/root,=r/root} | e        | {root=arwdDxt/root,=r/root}
+ simple_catalog | objects | {mats=arwdDxt/mats,reader=r/mats,=r/mats} | e        | {mats=arwdDxt/mats,reader=r/mats,=r/mats}
 (1 row)
 
 DROP EXTENSION simple;
