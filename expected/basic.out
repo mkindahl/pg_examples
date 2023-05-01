@@ -6,7 +6,7 @@ CALL add_note('basic_foo', 'Just a note');
          List of relations
  Schema |   Name    | Type  | Owner 
 --------+-----------+-------+-------
- public | basic_foo | table | root
+ public | basic_foo | table | mats
 (1 row)
 
 \d simple_catalog.*
@@ -23,12 +23,6 @@ Indexes:
 --------+----------+------+------------
  objoid | regclass | yes  | objoid
 primary key, btree, for table "simple_catalog.objects"
-
-         Table "simple_catalog.tmp_objects"
- Column  |   Type   | Collation | Nullable | Default 
----------+----------+-----------+----------+---------
- objoid  | regclass |           | not null | 
- objnote | text     |           |          | 
 
 SELECT * FROM simple_catalog.objects;
   objoid   |         objnote          
