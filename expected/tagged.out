@@ -1,0 +1,15 @@
+CREATE EXTENSION tagged;
+CREATE TABLE jobs(job_id serial, device_id int);
+SELECT 'foo'::tagged;
+ERROR:  cannot accept a value of type tagged
+LINE 1: SELECT 'foo'::tagged;
+               ^
+CALL builder('jobs', ARRAY[hash_part('job_id', 3), range_part('device_id', '1 day'::interval)]);
+NOTICE:  hash: rel='jobs', attname='job_id', attno=1, partitions=3
+NOTICE:  range: rel='jobs', attname='device_id', interval='@ 1 day'
+CALL builder('jobs', hash_part('job_id', 3));
+NOTICE:  hash: rel='jobs', attname='job_id', attno=1, partitions=3
+CALL builder('jobs', range_part('device_id', '1 day'::interval));
+NOTICE:  range: rel='jobs', attname='device_id', interval='@ 1 day'
+CALL builder('jobs', range_part('unknown_id', '1 day'::interval));
+ERROR:  relation jobs does not have an attribute with name unknown_id
