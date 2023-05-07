@@ -1,4 +1,4 @@
-CREATE EXTENSION manip;
+CREATE EXTENSION cplusplus;	-- C++ version of scanner
 
 CREATE TABLE job (job_id serial, body regproc, descr text);
 
