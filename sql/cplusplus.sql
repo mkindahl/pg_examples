@@ -1,4 +1,4 @@
-CREATE EXTENSION manip;
+CREATE EXTENSION cplusplus;	-- C++ version of scanner
 
 CREATE TABLE job (job_id serial, body regproc, descr text);
 
@@ -7,3 +7,6 @@ INSERT INTO job(body,descr) VALUES
        ('pg_backend_pid', 'Get backend PID');
        
 CALL scan_table('job');
+
+DROP TABLE job;
+DROP EXTENSION cplusplus;

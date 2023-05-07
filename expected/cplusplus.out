@@ -1,0 +1,15 @@
+CREATE EXTENSION cplusplus;	-- C++ version of scanner
+CREATE TABLE job (job_id serial, body regproc, descr text);
+INSERT INTO job(body,descr) VALUES
+       ('scan_table', 'Scan table'),
+       ('pg_backend_pid', 'Get backend PID');
+       
+CALL scan_table('job');
+NOTICE:  attnum: 1, attname: job_id, value: 1
+NOTICE:  attnum: 2, attname: body, value: scan_table
+NOTICE:  attnum: 3, attname: descr, value: Scan table
+NOTICE:  attnum: 1, attname: job_id, value: 2
+NOTICE:  attnum: 2, attname: body, value: pg_backend_pid
+NOTICE:  attnum: 3, attname: descr, value: Get backend PID
+DROP TABLE job;
+DROP EXTENSION cplusplus;

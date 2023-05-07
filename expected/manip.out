@@ -11,3 +11,5 @@ NOTICE:  attnum: 3, attname: descr, value: Scan table
 NOTICE:  attnum: 1, attname: job_id, value: 2
 NOTICE:  attnum: 2, attname: body, value: pg_backend_pid
 NOTICE:  attnum: 3, attname: descr, value: Get backend PID
+DROP TABLE job;
+DROP EXTENSION manip;
