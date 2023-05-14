@@ -19,23 +19,22 @@ Datum scan_table(PG_FUNCTION_ARGS);
 }
 
 #include "pgexxt/scanner.h"
+#include "pgexxt/table.h"
 
 Datum scan_table(PG_FUNCTION_ARGS) {
   Oid reloid = PG_GETARG_OID(0);
-  Relation rel = table_open(reloid, AccessShareLock);
-  TupleDesc tupleDesc = RelationGetDescr(rel);
+  pgexxt::Table::Handle handle(reloid, AccessShareLock);
+  TupleDesc tupleDesc = handle.GetTupleDesc();
   int count = 0;
-  pgexxt::ForwardScanner scanner(rel);
-  for (auto slot : scanner) {
+  for (auto slot : handle.ForwardScan()) {
     CHECK_FOR_INTERRUPTS();
     slot_getallattrs(slot);
     if (count++ < 10) {
-      for (int i = 0; i < slot->tts_nvalid; ++i) {
-        Form_pg_attribute attr = TupleDescAttr(tupleDesc, i);
+      for (auto attr : handle.attributes()) {
         char* str;
-        if (attr->attisdropped)
+        if (attr.is_dropped())
           continue;
-        if (slot->tts_isnull[i])
+        if (slot.isnull(attr))
           str = "NULL";
         else {
           Oid typoutputfunc;
@@ -43,7 +42,7 @@ Datum scan_table(PG_FUNCTION_ARGS) {
           FmgrInfo typoutputfinfo;
           getTypeOutputInfo(attr->atttypid, &typoutputfunc, &typIsVarlena);
           fmgr_info(typoutputfunc, &typoutputfinfo);
-          str = OutputFunctionCall(&typoutputfinfo, slot->tts_values[i]);
+          str = OutputFunctionCall(&typoutputfinfo, slot.value(attr));
         }
 
         elog(NOTICE, "attnum: %d, attname: %s, value: %s", attr->attnum,
@@ -53,6 +52,5 @@ Datum scan_table(PG_FUNCTION_ARGS) {
   }
   if (count >= 10)
     elog(NOTICE, "... and %d more rows", count - 10);
-  table_close(rel, NoLock);
   PG_RETURN_VOID();
 }
