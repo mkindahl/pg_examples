@@ -22,4 +22,7 @@ make installcheck
   background worker regularly.
 * [Extension `simple`](docs/simple.md) demonstrates a problem with
   permissions and extensions that was brought up in `pgsql-bugs`
+* [Extension `tagged`](docs/tagged.md) demonstrates how to crate
+  polymorphic objects, for example, arrays that can contain objects of
+  different dynamic types.
 
