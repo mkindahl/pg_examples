@@ -1,15 +1,29 @@
+/*
+ * Copyright 2025 Mats Kindahl.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License"); you
+ * may not use this file except in compliance with the License.  You
+ * may obtain a copy of the License at
+ *
+ *    http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
+ * implied. See the License for the specific language governing
+ * permissions and limitations under the License.
+ */
 
 #include <postgres.h>
 #include <fmgr.h>
-
-#include <miscadmin.h>
-#include <pgstat.h>
 
 #include <access/relscan.h>
 #include <access/table.h>
 #include <access/tableam.h>
 #include <executor/spi.h>
 #include <executor/tuptable.h>
+#include <miscadmin.h>
+#include <pgstat.h>
 #include <postmaster/bgworker.h>
 #include <postmaster/interrupt.h>
 #include <storage/ipc.h>
@@ -58,8 +72,7 @@ void WorkerMain(Datum arg) {
     int ret = SPI_execute(
         "SELECT json_build_object('tables', count(*)) FROM pg_class WHERE "
         "reltype != 0",
-        true,
-        0);
+        true, 0);
 
     if (ret != SPI_OK_SELECT)
       elog(FATAL, "SPI_execute failed: error code %d", ret);
@@ -68,9 +81,7 @@ void WorkerMain(Datum arg) {
   if (SPI_processed != 1)
     elog(FATAL, "not a singleton result");
 
-  elog(LOG,
-       "report for database %s: %s",
-       DatabaseName,
+  elog(LOG, "report for database %s: %s", DatabaseName,
        SPI_getvalue(SPI_tuptable->vals[0], SPI_tuptable->tupdesc, 1));
 
   SPI_finish();
@@ -93,8 +104,8 @@ static void StartBackgroundWorkers(void) {
       .bgw_notify_pid = 0,
   };
 
-  snprintf(
-      worker.bgw_name, BGW_MAXLEN, "Reporter for database %s", DatabaseName);
+  snprintf(worker.bgw_name, BGW_MAXLEN, "Reporter for database %s",
+           DatabaseName);
 
   RegisterBackgroundWorker(&worker);
 }
@@ -103,28 +114,13 @@ void _PG_init(void) {
   if (!process_shared_preload_libraries_in_progress)
     return;
 
-  DefineCustomStringVariable("reporter.database",
-                             "Database name.",
-                             "Database name to connect to.",
-                             &DatabaseName,
-                             NULL,
-                             PGC_POSTMASTER,
-                             0,
-                             NULL,
-                             NULL,
-                             NULL);
-  DefineCustomIntVariable("reporter.report_interval",
-                          "Report interval.",
+  DefineCustomStringVariable("reporter.database", "Database name.",
+                             "Database name to connect to.", &DatabaseName,
+                             NULL, PGC_POSTMASTER, 0, NULL, NULL, NULL);
+  DefineCustomIntVariable("reporter.report_interval", "Report interval.",
                           "Interval in seconds for running reporter.",
-                          &ReportInterval,
-                          60,
-                          60,
-                          3600 * 24, /* A day */
-                          PGC_POSTMASTER,
-                          0,
-                          NULL,
-                          NULL,
-                          NULL);
+                          &ReportInterval, 60, 0, 3600 * 24, /* A day */
+                          PGC_POSTMASTER, 0, NULL, NULL, NULL);
 
   StartBackgroundWorkers();
 }

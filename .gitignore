@@ -17,7 +17,7 @@
 *.a
 *.lib
 
-# PostgreSQL temporary files and directories
-results/
+# PGXS files
+results/**
 regression.diffs
 regression.out
