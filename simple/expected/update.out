@@ -9,14 +9,20 @@ SELECT nspname, defaclacl FROM pg_namespace ns JOIN pg_default_acl ON ns.oid = d
  simple_catalog | {reader=r/mats}
 (1 row)
 
-SELECT nspname, relname, relacl, privtype, initprivs
-FROM pg_class cl JOIN pg_namespace ns ON ns.oid = relnamespace LEFT JOIN pg_init_privs ON objoid = cl.oid
-WHERE relname = 'objects';
-    nspname     | relname |                  relacl                   | privtype |          initprivs          
-----------------+---------+-------------------------------------------+----------+-----------------------------
- simple_catalog | objects | {mats=arwdDxt/mats,=r/mats,reader=r/mats} | e        | {mats=arwdDxt/mats,=r/mats}
-(1 row)
-
+WITH
+  summary AS (
+    SELECT nspname,
+           relname,
+           (aclexplode(relacl)).privilege_type AS relacl_privilege_type,
+           (aclexplode(relacl)).grantee::regrole AS relacl_grantee,
+           privtype,
+           (aclexplode(initprivs)).privilege_type AS initprivs_privilege_type,
+           (aclexplode(initprivs)).grantee::regrole AS initprivs_grantee
+      FROM pg_class cl
+      JOIN pg_namespace ns ON ns.oid = relnamespace
+ LEFT JOIN pg_init_privs ON objoid = cl.oid
+     WHERE relname = 'objects')
+SELECT * INTO saved FROM summary;
 SELECT nspname, nspacl, privtype, initprivs
 FROM pg_namespace ns LEFT JOIN pg_init_privs ON objoid = ns.oid
 WHERE nspname = 'simple_catalog';
@@ -48,13 +54,33 @@ WHERE nspname = 'simple_catalog';
  simple_catalog |        |          | 
 (1 row)
 
-SELECT nspname, relname, relacl, privtype, initprivs
-FROM pg_class cl JOIN pg_namespace ns ON ns.oid = relnamespace LEFT JOIN pg_init_privs ON objoid = cl.oid
-WHERE relname = 'objects';
-    nspname     | relname |                  relacl                   | privtype |                 initprivs                 
-----------------+---------+-------------------------------------------+----------+-------------------------------------------
- simple_catalog | objects | {mats=arwdDxt/mats,reader=r/mats,=r/mats} | e        | {mats=arwdDxt/mats,reader=r/mats,=r/mats}
-(1 row)
+WITH
+  summary AS (
+    SELECT nspname,
+           relname,
+           (aclexplode(relacl)).privilege_type AS relacl_privilege_type,
+           (aclexplode(relacl)).grantee::regrole AS relacl_grantee,
+           privtype,
+           (aclexplode(initprivs)).privilege_type AS initprivs_privilege_type,
+           (aclexplode(initprivs)).grantee::regrole AS initprivs_grantee
+      FROM pg_class cl
+      JOIN pg_namespace ns ON ns.oid = relnamespace
+ LEFT JOIN pg_init_privs ON objoid = cl.oid
+     WHERE relname = 'objects')
+SELECT COALESCE(saved.nspname, summary.nspname) AS nspname,
+       COALESCE(saved.relname, summary.relname) AS relname,
+       COALESCE(saved.privtype, summary.privtype) AS privtype,
+       saved.relacl_privilege_type, summary.relacl_privilege_type,
+       saved.relacl_grantee, summary.relacl_grantee,
+       saved.initprivs_privilege_type, summary.initprivs_privilege_type,
+       saved.initprivs_grantee, summary.initprivs_grantee
+  FROM summary FULL JOIN saved ON row(saved.*) = row(summary.*)
+ WHERE saved.relname IS NULL OR summary.relname IS NULL;
+    nspname     | relname | privtype | relacl_privilege_type | relacl_privilege_type | relacl_grantee | relacl_grantee | initprivs_privilege_type | initprivs_privilege_type | initprivs_grantee | initprivs_grantee 
+----------------+---------+----------+-----------------------+-----------------------+----------------+----------------+--------------------------+--------------------------+-------------------+-------------------
+ simple_catalog | objects | e        | SELECT                |                       | reader         |                |                          |                          |                   | 
+ simple_catalog | objects | e        |                       | SELECT                |                | reader         |                          | SELECT                   |                   | reader
+(2 rows)
 
 DROP EXTENSION simple;
 DROP SCHEMA simple_catalog;
