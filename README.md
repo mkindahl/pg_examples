@@ -18,8 +18,8 @@ make installcheck
 
 ## Documentation
 
-* [Extension `reporter`](docs/reporter.md) is an example of how to run
+* [Extension `reporter`](reporter/README.md) is an example of how to run
   background worker regularly.
-* [Extension `simple`](docs/simple.md) demonstrates a problem with
+* [Extension `simple`](simple/README.md) demonstrates a problem with
   permissions and extensions that was brought up in `pgsql-bugs`
 
