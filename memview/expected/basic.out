@@ -1,0 +1,73 @@
+CREATE EXTENSION memview;
+CREATE ROLE wizard;
+CREATE VIEW memview AS
+SELECT row_id, pid, owner::regrole, descr
+FROM memview_view_scan() v(row_id, dboid, pid, owner, descr)
+WHERE dboid = (select oid from pg_database where datname = current_database());
+-- Test insert function.
+SELECT pid, owner, descr FROM memview;
+ pid | owner | descr 
+-----+-------+-------
+(0 rows)
+
+SELECT memview_row_insert(1, 'wizard'::regrole, 'With magic');
+ memview_row_insert 
+--------------------
+ 
+(1 row)
+
+SELECT pid, owner, descr FROM memview;
+ pid | owner  |   descr    
+-----+--------+------------
+   1 | wizard | With magic
+(1 row)
+
+SELECT memview_row_insert(2, 'wizard'::regrole, 'More magic');
+ memview_row_insert 
+--------------------
+ 
+(1 row)
+
+SELECT pid, owner, descr FROM memview;
+ pid | owner  |   descr    
+-----+--------+------------
+   1 | wizard | With magic
+   2 | wizard | More magic
+(2 rows)
+
+-- Test update function.
+SELECT row_id from memview where descr = 'With magic' limit 1 \gset
+SELECT memview_row_update(:row_id, 3, 'wizard'::regrole, 'Less magic');
+ memview_row_update 
+--------------------
+ 
+(1 row)
+
+SELECT pid, owner, descr FROM memview;
+ pid | owner  |   descr    
+-----+--------+------------
+   3 | wizard | Less magic
+   2 | wizard | More magic
+(2 rows)
+
+-- Test delete function. Note that the row id changes since the table
+-- is compacted.
+SELECT memview_row_delete(:row_id);
+ memview_row_delete 
+--------------------
+ 
+(1 row)
+
+SELECT pid, owner, descr FROM memview;
+ pid | owner  |   descr    
+-----+--------+------------
+   2 | wizard | More magic
+(1 row)
+
+SELECT memview_row_delete(row_id) FROM memview;
+ memview_row_delete 
+--------------------
+ 
+(1 row)
+
+DROP ROLE wizard;
