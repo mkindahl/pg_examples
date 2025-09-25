@@ -15,6 +15,8 @@
 
 #include "catalog/pg_type_d.h"
 #include "postgres_ext.h"
+#include "utils/palloc.h"
+#include "utils/resowner.h"
 
 #include <access/xact.h>
 #include <catalog/objectaccess.h>
@@ -57,19 +59,35 @@ static void TaskRunnerReloadConfig(void);
 static void TaskRunnerUpdateState(TaskRunnerState *state);
 static void TaskRunnerAttachSession(dsm_handle handle);
 static void TaskRunnerExecuteNext(TaskRunnerState *state);
+static void TaskRunnerPrepareAndExecute(TaskRunnerQuery *trq, Datum values[],
+                                        char nulls[], bool read_only,
+                                        int tcount);
 
 static Oid TaskTableOid = InvalidOid;
 static bool TaskTableChanged = false;
 static int TaskTotalRunners = 4;
 static char *TaskRunnerDatabase = NULL;
 
-static const char *query_getnextwakeup = "select min(task_sched) from task";
-static SPIPlanPtr plan_getnextwakeup = NULL;
+static TaskRunnerQuery getnextwakeup = {
+    .query = "select min(task_sched) from task",
+    .ok = SPI_OK_SELECT,
+    .nargs = 0,
+};
 
-static const char *query_getnexttask =
-    "select * from tasks where task_sched <= now() and task_finish is null "
-    "order by task_sched desc limit 1 for no key update skip locked";
-static SPIPlanPtr plan_getnexttask = NULL;
+static TaskRunnerQuery getnexttask = {
+    .query =
+        "select * from task where task_sched <= now() order by task_sched desc "
+        "for no key update skip locked",
+    .ok = SPI_OK_SELECT,
+    .nargs = 0,
+};
+
+static TaskRunnerQuery deletetask = {
+    .query = "delete from task where task_id = $1",
+    .ok = SPI_OK_DELETE,
+    .nargs = 1,
+    .argtypes = {INT4OID},
+};
 
 MemoryContext TaskRunnerScratchMemoryContext;
 
@@ -85,8 +103,8 @@ MemoryContext TaskRunnerScratchMemoryContext;
  */
 void TaskRunnerMain(Datum main_arg) {
   int rc, wake_events;
-  long timeout;
   TaskRunnerState state = {.next_wakeup = GetCurrentTimestamp()};
+  ResourceOwner resowner;
 
   pqsignal(SIGHUP, SignalHandlerForConfigReload);
   pqsignal(SIGINT, SignalHandlerForShutdownRequest);
@@ -96,20 +114,36 @@ void TaskRunnerMain(Datum main_arg) {
   if (IsBinaryUpgrade)
     proc_exit(0);
 
-  /* Set up memory context to work in */
+  /* Set up resource owner and memory context to work in */
   Assert(CurrentResourceOwner == NULL);
-  CurrentResourceOwner = ResourceOwnerCreate(NULL, "TaskRunnerMain");
-  Assert(CurrentResourceOwner != NULL);
+  resowner = ResourceOwnerCreate(NULL, "TaskRunnerMain");
+  CurrentResourceOwner = resowner;
   CurrentMemoryContext = AllocSetContextCreate(
       TopMemoryContext, "TaskRunner", ALLOCSET_DEFAULT_SIZES);
   TaskRunnerScratchMemoryContext = AllocSetContextCreate(
-      TopMemoryContext, "TaskRunnerScratch", ALLOCSET_DEFAULT_SIZES);
+      CurrentMemoryContext, "TaskRunnerScratch", ALLOCSET_DEFAULT_SIZES);
 
   TaskRunnerAttachSession(DatumGetUInt32(main_arg));
 
+  /*
+   * This clears the resource owner, so we re-set it after.
+   */
   BackgroundWorkerInitializeConnection(TaskRunnerDatabase, NULL, 0);
+  CurrentResourceOwner = resowner;
+
+  elog(LOG,
+       "%s:%05d: init CurrentResourceOwner=%p, CurrentMemoryContext=%p, "
+       "TopMemoryContext=%p, TaskRunnerDatabase=%s",
+       __func__,
+       __LINE__,
+       CurrentResourceOwner,
+       CurrentMemoryContext,
+       TopMemoryContext,
+       TaskRunnerDatabase);
 
   for (;;) {
+    long timeout = 0;
+
     CHECK_FOR_INTERRUPTS();
 
     if (ShutdownRequestPending)
@@ -123,7 +157,11 @@ void TaskRunnerMain(Datum main_arg) {
     if (TaskTableChanged)
       TaskRunnerUpdateState(&state);
 
-    if (state.next_wakeup >= GetCurrentTimestamp())
+    /*
+     * If next wakeup is in the past, we fetch and execute the next
+     * task.
+     */
+    if (state.next_wakeup < GetCurrentTimestamp())
       TaskRunnerExecuteNext(&state);
 
     /*
@@ -133,9 +171,21 @@ void TaskRunnerMain(Datum main_arg) {
 
     /* Wait for more work. */
     wake_events = WL_LATCH_SET | WL_EXIT_ON_PM_DEATH;
-    if (state.use_timeout)
+
+    /*
+     * WaitEventSetWait can handle negative timouts so no need to check
+     * that timeout is not negative.
+     *
+     * WaitEventSetWait will be passed -1 as timeout if WL_TIMEOUT is
+     * not set, so no need to deal with "timeout" if WL_TIMEOUT is not
+     * set.
+     */
+    if (state.use_timeout) {
       wake_events |= WL_TIMEOUT;
-    timeout = state.next_wakeup - GetCurrentTimestamp();
+      /* Timestamp is in microseconds, timeout is in milliseconds. */
+      timeout = (state.next_wakeup - GetCurrentTimestamp()) / 1000;
+    }
+
     rc = WaitLatch(MyLatch, wake_events, timeout, 0);
 
     if (rc & WL_LATCH_SET)
@@ -160,8 +210,13 @@ static void TaskRunnerRelCallback(Datum arg, Oid relid) {
   /* TaskTableOid can be InvalidOid in case the table does not exist,
    * but that is OK since it just means that the task table is not
    * defined yet, hence has not changed. */
+
   if (OidIsValid(TaskTableOid) && TaskTableOid == relid)
     TaskTableChanged = true;
+  elog(LOG,
+       "TaskTableOid=%d, TaskTableChanged=%s",
+       TaskTableOid,
+       TaskTableChanged ? "yes" : "no");
 }
 
 static void TaskRunnerReloadConfig(void) {
@@ -173,33 +228,20 @@ static void TaskRunnerReloadConfig(void) {
  * time. Note that the next wakeup time can be in the past.
  */
 static void TaskRunnerUpdateState(TaskRunnerState *state) {
-  int rc;
   MemoryContext old_context;
 
   old_context = MemoryContextSwitchTo(TaskRunnerScratchMemoryContext);
 
+  SetCurrentStatementStartTimestamp();
+  AbortOutOfAnyTransaction();
+  StartTransactionCommand();
+
   if (SPI_connect() != SPI_OK_CONNECT)
     elog(ERROR, "SPI_connect failed");
 
-  if (plan_getnextwakeup == NULL) {
-    SPIPlanPtr plan;
-    plan = SPI_prepare(query_getnextwakeup, 0, NULL);
-    if (plan == NULL)
-      elog(ERROR, "SPI_prepare failed for \"%s\"", query_getnextwakeup);
-    SPI_keepplan(plan);
-    plan_getnextwakeup = plan;
-  }
-
-  SetCurrentStatementStartTimestamp();
-  StartTransactionCommand();
   PushActiveSnapshot(GetTransactionSnapshot());
 
-  debug_query_string = query_getnextwakeup;
-  pgstat_report_activity(STATE_RUNNING, debug_query_string);
-
-  rc = SPI_execute_plan(plan_getnextwakeup, NULL, NULL, true, 0);
-  if (rc != SPI_OK_SELECT)
-    elog(ERROR, "failed to fetch next wakeup time");
+  TaskRunnerPrepareAndExecute(&getnextwakeup, NULL, NULL, true, 1);
 
   /*
    * We either have one or zero rows. If we have zero rows, we can idle until
@@ -219,13 +261,17 @@ static void TaskRunnerUpdateState(TaskRunnerState *state) {
     state->next_wakeup = DatumGetTimestampTz(value);
   }
 
-  SPI_finish();
+  if (SPI_finish() != SPI_OK_FINISH)
+    elog(ERROR, "%s: SPI_finish() failed", __func__);
+
   PopActiveSnapshot();
   CommitTransactionCommand();
 
-  debug_query_string = NULL;
-  pgstat_report_activity(STATE_RUNNING, debug_query_string);
-
+  elog(LOG,
+       "%s: use_timeout=%s, next wakeup at %s",
+       __func__,
+       state->use_timeout ? "yes" : "no",
+       timestamptz_to_str(state->next_wakeup));
   MemoryContextSwitchTo(old_context);
   MemoryContextReset(TaskRunnerScratchMemoryContext);
 }
@@ -258,42 +304,27 @@ static void TaskRunnerAttachSession(dsm_handle handle) {}
 #endif
 
 static void TaskRunnerExecuteNext(TaskRunnerState *state) {
-  int rc;
   MemoryContext old_context;
   bool owner_isnull, exec_isnull;
-  int owner_attno, exec_attno;
-  Oid owner;
+  int task_id_attno, task_owner_attno, task_exec_attno;
+  int32 task_id;
+  Oid task_owner;
   HeapTuple tup;
   TupleDesc tupdesc;
-  Name exec_proc;
+  Name task_exec;
 
   old_context = MemoryContextSwitchTo(TaskRunnerScratchMemoryContext);
 
-  if (SPI_connect() != SPI_OK_CONNECT)
-    elog(ERROR, "%s: SPI_connect failed", __func__);
-
-  if (plan_getnexttask == NULL) {
-    SPIPlanPtr plan = SPI_prepare(query_getnexttask, 0, NULL);
-    if (plan == NULL)
-      elog(ERROR,
-           "%s: SPI_prepare failed for \"%s\"",
-           __func__,
-           query_getnexttask);
-    if (SPI_keepplan(plan))
-      elog(ERROR, "%s: SPI_keepplan failed", __func__);
-    plan_getnexttask = plan;
-  }
-
   SetCurrentStatementStartTimestamp();
+  AbortOutOfAnyTransaction();
   StartTransactionCommand();
+
+  if (SPI_connect_ext(SPI_OPT_NONATOMIC) != SPI_OK_CONNECT)
+    elog(ERROR, "%s: SPI_connect_ext failed", __func__);
+
   PushActiveSnapshot(GetTransactionSnapshot());
 
-  debug_query_string = query_getnexttask;
-  pgstat_report_activity(STATE_RUNNING, debug_query_string);
-
-  rc = SPI_execute_plan(plan_getnexttask, NULL, NULL, true, 0);
-  if (rc != SPI_OK_SELECT)
-    elog(ERROR, "failed to fetch next task");
+  TaskRunnerPrepareAndExecute(&getnexttask, NULL, NULL, false, 1);
 
   /*
    * We either have one or zero rows. If we have zero rows, tasks that are
@@ -306,35 +337,48 @@ static void TaskRunnerExecuteNext(TaskRunnerState *state) {
 
   tup = SPI_tuptable->vals[0];
   tupdesc = SPI_tuptable->tupdesc;
-  owner_attno = SPI_fnumber(tupdesc, "task_owner");
-  exec_attno = SPI_fnumber(tupdesc, "task_exec");
+  task_id_attno = SPI_fnumber(tupdesc, "task_id");
+  task_owner_attno = SPI_fnumber(tupdesc, "task_owner");
+  task_exec_attno = SPI_fnumber(tupdesc, "task_exec");
 
-  owner =
-      DatumGetObjectId(SPI_getbinval(tup, tupdesc, owner_attno, &owner_isnull));
-  if (!has_privs_of_role(GetUserId(), owner))
+  task_owner = DatumGetObjectId(
+      SPI_getbinval(tup, tupdesc, task_owner_attno, &owner_isnull));
+  if (!has_privs_of_role(GetUserId(), task_owner))
     ereport(ERROR,
             (errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
              errmsg("permission denied to execute task")));
-  exec_proc =
-      DatumGetName(SPI_getbinval(tup, tupdesc, exec_attno, &exec_isnull));
+  task_exec =
+      DatumGetName(SPI_getbinval(tup, tupdesc, task_exec_attno, &exec_isnull));
 
   if (!exec_isnull) {
     LOCAL_FCINFO(fcinfo, 2);
+    Oid argtypes[] = {TIMESTAMPTZOID, JSONBOID};
     AclResult aclresult;
     PgStat_FunctionCallUsage fcusage;
     FmgrInfo finfo;
-    bool sched_isnull, config_isnull;
+    bool sched_isnull, config_isnull, task_id_isnull;
+    List *namelist;
+    Oid proc_oid;
 
     int config_attno = SPI_fnumber(tupdesc, "task_config");
     int sched_attno = SPI_fnumber(tupdesc, "task_sched");
 
-    Oid argtypes[] = {TIMESTAMPTZOID, JSONBOID};
-    List *namelist = stringToQualifiedNameList(NameStr(*exec_proc), NULL);
-    Oid proc_oid = LookupFuncName(namelist, 2, argtypes, false);
+    /* Delete the task before executing */
+    task_id = DatumGetObjectId(
+        SPI_getbinval(tup, tupdesc, task_id_attno, &task_id_isnull));
+    elog(LOG, "deleting task with task id %d", task_id);
+    TaskRunnerPrepareAndExecute(&deletetask,
+                                (Datum[]){Int32GetDatum(task_id)},
+                                (char[]){' '},
+                                false,
+                                0);
+
+    namelist = stringToQualifiedNameList(NameStr(*task_exec), NULL);
+    proc_oid = LookupFuncName(namelist, 2, argtypes, false);
     aclresult = object_aclcheck(
         ProcedureRelationId, proc_oid, GetUserId(), ACL_EXECUTE);
     if (aclresult != ACLCHECK_OK)
-      aclcheck_error(aclresult, OBJECT_FUNCTION, NameStr(*exec_proc));
+      aclcheck_error(aclresult, OBJECT_FUNCTION, NameStr(*task_exec));
 
     InvokeFunctionExecuteHook(proc_oid);
     fmgr_info(proc_oid, &finfo);
@@ -347,15 +391,20 @@ static void TaskRunnerExecuteNext(TaskRunnerState *state) {
         SPI_getbinval(tup, tupdesc, config_attno, &config_isnull);
     fcinfo->args[1].isnull = config_isnull;
 
+    elog(LOG, "%s: found %s, so executing", __func__, NameStr(*task_exec));
+
     pgstat_init_function_usage(fcinfo, &fcusage);
     pgstat_report_activity(STATE_RUNNING, NULL);
     FunctionCallInvoke(fcinfo);
     pgstat_report_activity(STATE_IDLE, NULL);
     pgstat_end_function_usage(&fcusage, true);
+
+    elog(LOG, "%s: %s executed", __func__, NameStr(*task_exec));
   }
 
   if (SPI_finish() != SPI_OK_FINISH)
     elog(ERROR, "%s: SPI_finish() failed", __func__);
+
   PopActiveSnapshot();
   CommitTransactionCommand();
 
@@ -403,10 +452,16 @@ void _PG_init(void) {
   worker.bgw_flags =
       BGWORKER_SHMEM_ACCESS | BGWORKER_BACKEND_DATABASE_CONNECTION;
   worker.bgw_start_time = BgWorkerStart_RecoveryFinished;
-  worker.bgw_restart_time = BGW_NEVER_RESTART;
   sprintf(worker.bgw_library_name, "tasks");
   sprintf(worker.bgw_function_name, "TaskRunnerMain");
   worker.bgw_notify_pid = 0;
+
+  /*
+   * Restart time is set to 30 seconds since it might be that either
+   * the database or the extension is not created yet. In that case,
+   * we keep retrying until the database and the extension is created.
+   */
+  worker.bgw_restart_time = 30;
 
   for (int i = 1; i <= TaskTotalRunners; i++) {
     snprintf(worker.bgw_name, BGW_MAXLEN, "Task Runner %d", i);
@@ -415,4 +470,30 @@ void _PG_init(void) {
 
     RegisterBackgroundWorker(&worker);
   }
+}
+
+void TaskRunnerPrepareAndExecute(TaskRunnerQuery *trq, Datum values[],
+                                 char nulls[], bool read_only, int tcount) {
+  int rc;
+
+  Assert(plan_var != NULL && query != NULL);
+
+  debug_query_string = trq->query;
+  pgstat_report_activity(STATE_RUNNING, debug_query_string);
+
+  if (trq->plan == NULL) {
+    SPIPlanPtr plan = SPI_prepare(trq->query, trq->nargs, trq->argtypes);
+    if (plan == NULL)
+      elog(ERROR, "SPI_prepare failed for \"%s\"", trq->query);
+    if (SPI_keepplan(plan))
+      elog(ERROR, "SPI_keepplan failed for \"%s\"", trq->query);
+    trq->plan = plan;
+  }
+
+  rc = SPI_execute_plan(trq->plan, values, nulls, read_only, tcount);
+  if (rc != trq->ok)
+    elog(ERROR, "SPI_execute_plan failed for \"%s\"", trq->query);
+
+  debug_query_string = NULL;
+  pgstat_report_activity(STATE_IDLE, debug_query_string);
 }
