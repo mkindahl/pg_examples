@@ -15,7 +15,6 @@
 
 typedef struct TaskRunnerState {
   TimestampTz next_wakeup;
-  bool use_timeout;
 } TaskRunnerState;
 
 /*

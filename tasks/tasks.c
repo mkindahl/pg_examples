@@ -11,12 +11,8 @@
 
 #include <miscadmin.h>
 #include <pgstat.h>
+#include <postgres_ext.h>
 #include <signal.h>
-
-#include "catalog/pg_type_d.h"
-#include "postgres_ext.h"
-#include "utils/palloc.h"
-#include "utils/resowner.h"
 
 #include <access/xact.h>
 #include <catalog/objectaccess.h>
@@ -37,7 +33,9 @@
 #include <utils/inval.h>
 #include <utils/lsyscache.h>
 #include <utils/memutils.h>
+#include <utils/palloc.h>
 #include <utils/regproc.h>
+#include <utils/resowner.h>
 #include <utils/snapmgr.h>
 #include <utils/timestamp.h>
 
@@ -69,21 +67,22 @@ static int TaskTotalRunners = 4;
 static char *TaskRunnerDatabase = NULL;
 
 static TaskRunnerQuery getnextwakeup = {
-    .query = "select min(task_sched) from task",
+    /* Do we need to skip locked rows in some way? */
+    .query = "select min(task_sched) from tasks.task",
     .ok = SPI_OK_SELECT,
     .nargs = 0,
 };
 
 static TaskRunnerQuery getnexttask = {
     .query =
-        "select * from task where task_sched <= now() order by task_sched desc "
-        "for no key update skip locked",
+        "select * from tasks.task where task_sched <= now() order by "
+        "task_sched desc for no key update skip locked",
     .ok = SPI_OK_SELECT,
     .nargs = 0,
 };
 
 static TaskRunnerQuery deletetask = {
-    .query = "delete from task where task_id = $1",
+    .query = "delete from tasks.task where task_id = $1",
     .ok = SPI_OK_DELETE,
     .nargs = 1,
     .argtypes = {INT4OID},
@@ -102,7 +101,6 @@ MemoryContext TaskRunnerScratchMemoryContext;
  * centralized scheduler.
  */
 void TaskRunnerMain(Datum main_arg) {
-  int rc, wake_events;
   TaskRunnerState state = {.next_wakeup = GetCurrentTimestamp()};
   ResourceOwner resowner;
 
@@ -131,15 +129,10 @@ void TaskRunnerMain(Datum main_arg) {
   BackgroundWorkerInitializeConnection(TaskRunnerDatabase, NULL, 0);
   CurrentResourceOwner = resowner;
 
-  elog(LOG,
-       "%s:%05d: init CurrentResourceOwner=%p, CurrentMemoryContext=%p, "
-       "TopMemoryContext=%p, TaskRunnerDatabase=%s",
-       __func__,
-       __LINE__,
-       CurrentResourceOwner,
-       CurrentMemoryContext,
-       TopMemoryContext,
-       TaskRunnerDatabase);
+  /*
+   * Make the application name visible in pg_stat_activity.
+   */
+  pgstat_report_appname(MyBgworkerEntry->bgw_name);
 
   for (;;) {
     long timeout = 0;
@@ -151,6 +144,15 @@ void TaskRunnerMain(Datum main_arg) {
 
     if (ConfigReloadPending)
       TaskRunnerReloadConfig();
+
+    SetCurrentStatementStartTimestamp();
+    AbortOutOfAnyTransaction();
+    StartTransactionCommand();
+
+    if (SPI_connect_ext(SPI_OPT_NONATOMIC) != SPI_OK_CONNECT)
+      elog(ERROR, "%s: SPI_connect_ext failed", __func__);
+
+    PushActiveSnapshot(GetTransactionSnapshot());
 
     AcceptInvalidationMessages();
 
@@ -169,27 +171,22 @@ void TaskRunnerMain(Datum main_arg) {
      */
     TaskRunnerUpdateState(&state);
 
-    /* Wait for more work. */
-    wake_events = WL_LATCH_SET | WL_EXIT_ON_PM_DEATH;
+    if (SPI_finish() != SPI_OK_FINISH)
+      elog(ERROR, "%s: SPI_finish() failed", __func__);
 
-    /*
-     * WaitEventSetWait can handle negative timouts so no need to check
-     * that timeout is not negative.
-     *
-     * WaitEventSetWait will be passed -1 as timeout if WL_TIMEOUT is
-     * not set, so no need to deal with "timeout" if WL_TIMEOUT is not
-     * set.
-     */
-    if (state.use_timeout) {
-      wake_events |= WL_TIMEOUT;
-      /* Timestamp is in microseconds, timeout is in milliseconds. */
-      timeout = (state.next_wakeup - GetCurrentTimestamp()) / 1000;
+    PopActiveSnapshot();
+    CommitTransactionCommand();
+
+    /* Timestamp is in microseconds, timeout is in milliseconds. */
+    timeout = (state.next_wakeup - GetCurrentTimestamp()) / 1000;
+
+    if (timeout > 0) {
+      int rc = WaitLatch(
+          MyLatch, WL_LATCH_SET | WL_EXIT_ON_PM_DEATH | WL_TIMEOUT, timeout, 0);
+
+      if (rc & WL_LATCH_SET)
+        ResetLatch(MyLatch);
     }
-
-    rc = WaitLatch(MyLatch, wake_events, timeout, 0);
-
-    if (rc & WL_LATCH_SET)
-      ResetLatch(MyLatch);
   }
 
   /* Restart runner if we get here. Shutdown requests are handled above. */
@@ -214,7 +211,8 @@ static void TaskRunnerRelCallback(Datum arg, Oid relid) {
   if (OidIsValid(TaskTableOid) && TaskTableOid == relid)
     TaskTableChanged = true;
   elog(LOG,
-       "TaskTableOid=%d, TaskTableChanged=%s",
+       "%s: TaskTableOid=%d, TaskTableChanged=%s",
+       __func__,
        TaskTableOid,
        TaskTableChanged ? "yes" : "no");
 }
@@ -232,46 +230,31 @@ static void TaskRunnerUpdateState(TaskRunnerState *state) {
 
   old_context = MemoryContextSwitchTo(TaskRunnerScratchMemoryContext);
 
-  SetCurrentStatementStartTimestamp();
-  AbortOutOfAnyTransaction();
-  StartTransactionCommand();
-
-  if (SPI_connect() != SPI_OK_CONNECT)
-    elog(ERROR, "SPI_connect failed");
-
-  PushActiveSnapshot(GetTransactionSnapshot());
-
   TaskRunnerPrepareAndExecute(&getnextwakeup, NULL, NULL, true, 1);
 
   /*
-   * We either have one or zero rows. If we have zero rows, we can idle until
-   * somebody adds something to the table, so we can skip waiting for a
-   * timeout.  If we have one row, have have the next wakeup time in the
-   * result.
+   * We either have one or zero rows. If we have zero rows, we can
+   * idle until somebody adds something to the table.  If we have one
+   * row, have have the next wakeup time in the result.
    */
-  state->use_timeout = (SPI_processed > 0);
+  state->next_wakeup = 0;
   if (SPI_processed > 0) {
     bool isnull;
     HeapTuple tup = SPI_tuptable->vals[0];
     Datum value = SPI_getbinval(tup, SPI_tuptable->tupdesc, 1, &isnull);
 
-    if (isnull)
-      elog(ERROR, "null scheduled time");
-
-    state->next_wakeup = DatumGetTimestampTz(value);
+    if (!isnull) {
+      state->next_wakeup = DatumGetTimestampTz(value);
+      elog(LOG,
+           "%s: next scheduled wakeup at %s",
+           __func__,
+           timestamptz_to_str(state->next_wakeup));
+    }
   }
 
-  if (SPI_finish() != SPI_OK_FINISH)
-    elog(ERROR, "%s: SPI_finish() failed", __func__);
+  if (state->next_wakeup == 0)
+    state->next_wakeup = GetCurrentTimestamp() + 1000000;
 
-  PopActiveSnapshot();
-  CommitTransactionCommand();
-
-  elog(LOG,
-       "%s: use_timeout=%s, next wakeup at %s",
-       __func__,
-       state->use_timeout ? "yes" : "no",
-       timestamptz_to_str(state->next_wakeup));
   MemoryContextSwitchTo(old_context);
   MemoryContextReset(TaskRunnerScratchMemoryContext);
 }
@@ -315,15 +298,6 @@ static void TaskRunnerExecuteNext(TaskRunnerState *state) {
 
   old_context = MemoryContextSwitchTo(TaskRunnerScratchMemoryContext);
 
-  SetCurrentStatementStartTimestamp();
-  AbortOutOfAnyTransaction();
-  StartTransactionCommand();
-
-  if (SPI_connect_ext(SPI_OPT_NONATOMIC) != SPI_OK_CONNECT)
-    elog(ERROR, "%s: SPI_connect_ext failed", __func__);
-
-  PushActiveSnapshot(GetTransactionSnapshot());
-
   TaskRunnerPrepareAndExecute(&getnexttask, NULL, NULL, false, 1);
 
   /*
@@ -353,6 +327,7 @@ static void TaskRunnerExecuteNext(TaskRunnerState *state) {
   if (!exec_isnull) {
     LOCAL_FCINFO(fcinfo, 2);
     Oid argtypes[] = {TIMESTAMPTZOID, JSONBOID};
+    char *activity;
     AclResult aclresult;
     PgStat_FunctionCallUsage fcusage;
     FmgrInfo finfo;
@@ -391,22 +366,20 @@ static void TaskRunnerExecuteNext(TaskRunnerState *state) {
         SPI_getbinval(tup, tupdesc, config_attno, &config_isnull);
     fcinfo->args[1].isnull = config_isnull;
 
-    elog(LOG, "%s: found %s, so executing", __func__, NameStr(*task_exec));
+    activity = psprintf("executing %s", NameStr(*task_exec));
+    elog(LOG, "%s: found %s, so %s", __func__, NameStr(*task_exec), activity);
 
+    pgstat_report_activity(STATE_RUNNING, activity);
     pgstat_init_function_usage(fcinfo, &fcusage);
-    pgstat_report_activity(STATE_RUNNING, NULL);
+
     FunctionCallInvoke(fcinfo);
-    pgstat_report_activity(STATE_IDLE, NULL);
+
     pgstat_end_function_usage(&fcusage, true);
+    pgstat_report_activity(STATE_IDLE, NULL);
+    pgstat_report_stat(true);
 
     elog(LOG, "%s: %s executed", __func__, NameStr(*task_exec));
   }
-
-  if (SPI_finish() != SPI_OK_FINISH)
-    elog(ERROR, "%s: SPI_finish() failed", __func__);
-
-  PopActiveSnapshot();
-  CommitTransactionCommand();
 
   debug_query_string = NULL;
   pgstat_report_activity(STATE_RUNNING, debug_query_string);
@@ -466,7 +439,7 @@ void _PG_init(void) {
   for (int i = 1; i <= TaskTotalRunners; i++) {
     snprintf(worker.bgw_name, BGW_MAXLEN, "Task Runner %d", i);
     snprintf(worker.bgw_type, BGW_MAXLEN, "Task Runner");
-    worker.bgw_main_arg = Int32GetDatum(i);
+    /* This should be the shared memory segment handle */
 
     RegisterBackgroundWorker(&worker);
   }
@@ -479,7 +452,7 @@ void TaskRunnerPrepareAndExecute(TaskRunnerQuery *trq, Datum values[],
   Assert(plan_var != NULL && query != NULL);
 
   debug_query_string = trq->query;
-  pgstat_report_activity(STATE_RUNNING, debug_query_string);
+  pgstat_report_activity(STATE_RUNNING, trq->query);
 
   if (trq->plan == NULL) {
     SPIPlanPtr plan = SPI_prepare(trq->query, trq->nargs, trq->argtypes);
@@ -495,5 +468,6 @@ void TaskRunnerPrepareAndExecute(TaskRunnerQuery *trq, Datum values[],
     elog(ERROR, "SPI_execute_plan failed for \"%s\"", trq->query);
 
   debug_query_string = NULL;
-  pgstat_report_activity(STATE_IDLE, debug_query_string);
+  pgstat_report_activity(STATE_IDLE, NULL);
+  pgstat_report_stat(true);
 }
