@@ -21,6 +21,8 @@
 
 #include <funcapi.h>
 #include <miscadmin.h>
+
+#include <commands/trigger.h>
 #include <storage/dsm.h>
 #include <storage/lwlock.h>
 #include <storage/shm_toc.h>
@@ -153,8 +155,9 @@ MemoryViewSession* memview_session_get(dsm_handle handle) {
 
     seg = dsm_attach(handle);
     if (seg == NULL)
-      ereport(ERROR, (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-                      errmsg("could not map dynamic shared memory segment")));
+      ereport(ERROR,
+              (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+               errmsg("could not map dynamic shared memory segment")));
 
     toc = shm_toc_attach(MEMVIEW_MAGIC, dsm_segment_address(seg));
     header = shm_toc_lookup(toc, MEMVIEW_KEY_CONTEXT, false);
@@ -179,7 +182,9 @@ Datum memview_row_insert(PG_FUNCTION_ARGS) {
 
   memview_init_shmem();
 
-  TRACE("inserting row (%d,%d,'%s'::regrole,%s)", MyDatabaseId, pid,
+  TRACE("inserting row (%d,%d,'%s'::regrole,%s)",
+        MyDatabaseId,
+        pid,
         NameStr(*DatumGetName(
             DirectFunctionCall1(pg_get_userbyid, ObjectIdGetDatum(owner)))),
         NameStr(*descr));
@@ -211,13 +216,23 @@ Datum memview_row_delete(PG_FUNCTION_ARGS) {
   int32 record_no = PG_GETARG_INT32(0);
   MemoryViewSession* session;
 
+  if (CALLED_AS_TRIGGER(fcinfo)) {
+    TriggerData* trigdata = (TriggerData*)fcinfo->context;
+
+    if (!TRIGGER_FIRED_INSTEAD(trigdata->tg_event))
+      ereport(ERROR,
+              (errcode(ERRCODE_E_R_I_E_TRIGGER_PROTOCOL_VIOLATED),
+               errmsg("must be called as trigger or directly")));
+  }
+
   memview_init_shmem();
 
   TRACE("deleting row %d", record_no);
 
   LWLockAcquire(&memview_state->lock, LW_EXCLUSIVE);
   session = memview_session_get(memview_state->handle);
-  memmove(&session->manifest[record_no], &session->manifest[record_no + 1],
+  memmove(&session->manifest[record_no],
+          &session->manifest[record_no + 1],
           (session->header->nrecords - record_no) * sizeof(MemoryViewRecord));
   --session->header->nrecords;
   LWLockRelease(&memview_state->lock);
@@ -234,7 +249,9 @@ Datum memview_row_update(PG_FUNCTION_ARGS) {
 
   memview_init_shmem();
 
-  TRACE("updating row %d with (%d,'%s'::regrole,%s)", record_no, pid,
+  TRACE("updating row %d with (%d,'%s'::regrole,%s)",
+        record_no,
+        pid,
         NameStr(*DatumGetName(
             DirectFunctionCall1(pg_get_userbyid, ObjectIdGetDatum(owner)))),
         NameStr(*descr));
@@ -270,9 +287,10 @@ Datum memview_view_scan(PG_FUNCTION_ARGS) {
     funcctx = SRF_FIRSTCALL_INIT();
 
     if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
-      ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-                      errmsg("function returning record called in context "
-                             "that cannot accept type record")));
+      ereport(ERROR,
+              (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+               errmsg("function returning record called in context "
+                      "that cannot accept type record")));
 
     LWLockAcquire(&memview_state->lock, LW_EXCLUSIVE);
     session = memview_session_get(memview_state->handle);
