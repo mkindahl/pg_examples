@@ -48,25 +48,13 @@ PG_MODULE_MAGIC;
 PG_FUNCTION_INFO_V1(tasks_start);
 
 /*
- * Callbacks for PostgreSQL.
- */
-#if 0
-static void TaskRunnerShmExit(int code, Datum arg);
-static void TaskRunnerRelCallback(Datum arg, Oid relid);
-#endif
-
-/*
  * Processing functions for the task runner.
  */
 static void TaskRunnerShutdown(void);
 static void TaskRunnerReloadConfig(void);
 static void TaskRunnerUpdateState(TaskRunnerState *state);
-static void TaskRunnerAttachSession(dsm_handle handle);
 static void TaskRunnerExecuteNext(TaskRunnerState *state);
 
-#if 0
-static Oid TaskTableOid = InvalidOid;
-#endif
 static bool TaskTableChanged = false;
 static int TaskTotalRunners = 4;
 static int TaskRunnerRestartTime = 30;
@@ -128,7 +116,6 @@ void TaskRunnerMain(Datum main_arg) {
   CurrentResourceOwner = resowner;
   CurrentMemoryContext = AllocSetContextCreate(
       TopMemoryContext, "TaskRunner", ALLOCSET_DEFAULT_SIZES);
-  TaskRunnerAttachSession(DatumGetUInt32(main_arg));
 
   /*
    * Initializing the connection clears the resource owner, so we
@@ -157,10 +144,6 @@ void TaskRunnerMain(Datum main_arg) {
 
     if (ConfigReloadPending)
       TaskRunnerReloadConfig();
-
-#if 0
-    AcceptInvalidationMessages();
-#endif
 
     SetCurrentStatementStartTimestamp();
     AbortOutOfAnyTransaction();
@@ -214,24 +197,6 @@ static void TaskRunnerShutdown(void) {
   proc_exit(0);
 }
 
-#if 0
-static void TaskRunnerRelCallback(Datum arg, Oid relid) {
-  if (!OidIsValid(TaskTableOid)) {
-    Oid nspoid = get_namespace_oid("tasks", false);
-    TaskTableOid = get_relname_relid("task", nspoid);
-  }
-
-  /* TaskTableOid can be InvalidOid in case the table does not exist,
-   * but that is OK since it just means that the task table is not
-   * defined yet, hence has not changed. */
-
-  if (OidIsValid(TaskTableOid) && TaskTableOid == relid)
-    TaskTableChanged = true;
-  elog(LOG, "%s: TaskTableOid=%d, TaskTableChanged=%s", __func__, TaskTableOid,
-       TaskTableChanged ? "yes" : "no");
-}
-#endif
-
 static void TaskRunnerReloadConfig(void) {
   ConfigReloadPending = false;
   ProcessConfigFile(PGC_SIGHUP);
@@ -259,33 +224,6 @@ static void TaskRunnerUpdateState(TaskRunnerState *state) {
 
   state->next_wakeup = DatumGetTimestampTz(value);
 }
-
-#if 0
-static void TaskRunnerShmExit(int code, Datum arg) {
-  dsm_detach((dsm_segment *)DatumGetPointer(arg));
-}
-
-static void TaskRunnerAttachSession(dsm_handle handle) {
-	dsm_segment *seg;
-  shm_toc *toc;
-
-  seg = dsm_attach(handle);
-  if (seg == NULL)
-    ereport(ERROR,
-            (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-             errmsg("could not map dynamic shared memory segment")));
-
-  toc = shm_toc_attach(TASK_RUNNER_MAGIC, dsm_segment_address(seg));
-  if (toc == NULL)
-    ereport(ERROR,
-            (errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-             errmsg("invalid magic number in dynamic shared memory segment")));
-
-  before_shmem_exit(TaskRunnerShmExit, PointerGetDatum(seg));
-}
-#else
-static void TaskRunnerAttachSession(dsm_handle handle) {}
-#endif
 
 static void TaskRunnerExecuteNext(TaskRunnerState *state) {
   bool owner_isnull, exec_isnull;
@@ -452,20 +390,6 @@ Datum tasks_start(PG_FUNCTION_ARGS) {
   PG_RETURN_VOID();
 }
 
-#if 0
-static bool check_databases(char **newval, void **extra, GucSource source) {
-  char *rawstring = pstrdup(*newval);
-  List *dblist;
-
-  if (!SplitIdentifierString(rawstring, ',', &dblist)) {
-    GUC_check_errdetail("List syntax is invalid.");
-    pfree(rawstring);
-    list_free(dblist);
-    return false;
-  }
-}
-#endif
-
 void _PG_init(void) {
   BackgroundWorker worker;
   char *rawstring;
@@ -479,10 +403,6 @@ void _PG_init(void) {
 
   if (!process_shared_preload_libraries_in_progress)
     return;
-
-#if 0
-  CacheRegisterRelcacheCallback(TaskRunnerRelCallback, (Datum)0);
-#endif
 
   DefineCustomIntVariable("tasks.workers",
                           "Number of workers.",
