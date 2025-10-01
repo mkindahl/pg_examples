@@ -1,14 +1,14 @@
 MODULES = memview
 EXTENSION = memview
 
-#package-version = $(shell git describe --long --match="v[0-9]*" | cut -d- -f1 | sed 's/^v//')
-package-version = 0.1
+VERSION_memview = $(shell perl -ne 'print "$$1" if /^default_version.*(\d+\.\d+)/' tasks.control)
 dist-name = postgresql-pg-lsm-$(package-version)
 dist-file = $(dist-name).tar.gz
 
 DATA_built = memview--$(package-version).sql
 
 REGRESS = basic
+REGRESS_OPTS += --load-extension=memview
 
 PG_CONFIG = pg_config
 PGXS := $(shell $(PG_CONFIG) --pgxs)
@@ -19,7 +19,7 @@ include $(PGXS)
 dist:
 	git archive --prefix=$(dist-name)/ --format=tar.gz -o $(dist-file) HEAD
 
-memview--$(package-version).sql: memview.sql
+memview--$(VERSION_memview).sql: memview.sql
 	cp $< $@
 
 memview.o: memview.c
