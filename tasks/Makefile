@@ -1,5 +1,5 @@
 MODULE_big = tasks
-OBJS = tasks.o
+OBJS = tasks.o memview.o
 
 VERSION_tasks = $(shell perl -ne 'print "$$1" if /^default_version.*(\d+\.\d+)/' tasks.control)
 

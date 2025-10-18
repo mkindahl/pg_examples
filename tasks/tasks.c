@@ -118,15 +118,18 @@ void TaskRunnerMain(Datum main_arg) {
       TopMemoryContext, "TaskRunner", ALLOCSET_DEFAULT_SIZES);
 
   /*
-   * Initializing the connection clears the resource owner, so we
-   * re-set it after. Role OID and database OID is not valid if we are
-   * called from _PG_init. Then we use the database name instead.
+   * Role OID and database OID is not valid if we are called from
+   * _PG_init. Then we use the database name instead.
    */
   if (OidIsValid(args.roleoid))
     BackgroundWorkerInitializeConnectionByOid(args.dboid, args.roleoid, 0);
   else
     BackgroundWorkerInitializeConnection(args.dbname, NULL, 0);
 
+  /*
+   * Initializing the connection clears the resource owner, so we
+   * re-set it after.
+   */
   CurrentResourceOwner = resowner;
 
   /*
@@ -391,15 +394,12 @@ Datum tasks_start(PG_FUNCTION_ARGS) {
 }
 
 void _PG_init(void) {
-  BackgroundWorker worker;
-  char *rawstring;
   List *dblist;
-  ListCell *lc;
+  char *rawstring;
 
-  TaskRunnerArgs args = {
-      .dboid = InvalidOid,
-      .roleoid = InvalidOid,
-  };
+  elog(DEBUG1,
+       "process_shared_preload_libraries_in_progress: %s",
+       process_shared_preload_libraries_in_progress ? "yes" : "no");
 
   if (!process_shared_preload_libraries_in_progress)
     return;
@@ -461,31 +461,41 @@ void _PG_init(void) {
 
   MarkGUCPrefixReserved("tasks");
 
-  memset(&worker, 0, sizeof(worker));
-  worker.bgw_flags =
-      BGWORKER_SHMEM_ACCESS | BGWORKER_BACKEND_DATABASE_CONNECTION;
-  worker.bgw_start_time = BgWorkerStart_RecoveryFinished;
-  worker.bgw_restart_time = TaskRunnerRestartTime;
-  snprintf(worker.bgw_library_name, MAXPGPATH, "tasks");
-  snprintf(worker.bgw_function_name, BGW_MAXLEN, "TaskRunnerMain");
-  snprintf(worker.bgw_type, BGW_MAXLEN, "Task Runner");
-  worker.bgw_notify_pid = 0;
-  worker.bgw_main_arg = 0; /* This should be the DSM segment handle */
-
+  elog(DEBUG1, "tasks.databases set to '%s'", TaskRunnerDatabases);
   rawstring = pstrdup(TaskRunnerDatabases);
   if (!SplitIdentifierString(rawstring, ',', &dblist)) {
     pfree(rawstring);
     list_free(dblist);
   }
 
-  foreach (lc, dblist) {
-    char *dbname = lfirst(lc);
+  if (list_length(dblist) > 0) {
+    BackgroundWorker worker;
+    ListCell *lc;
+    TaskRunnerArgs args = {
+        .dboid = InvalidOid,
+        .roleoid = InvalidOid,
+    };
 
-    for (int i = 1; i <= TaskTotalRunners; i++) {
-      snprintf(worker.bgw_name, BGW_MAXLEN, "%s %d", worker.bgw_type, i);
-      strncpy(args.dbname, dbname, sizeof(args.dbname));
-      memcpy(worker.bgw_extra, &args, sizeof(args));
-      RegisterBackgroundWorker(&worker);
+    memset(&worker, 0, sizeof(worker));
+    worker.bgw_flags =
+        BGWORKER_SHMEM_ACCESS | BGWORKER_BACKEND_DATABASE_CONNECTION;
+    worker.bgw_start_time = BgWorkerStart_RecoveryFinished;
+    worker.bgw_restart_time = TaskRunnerRestartTime;
+    snprintf(worker.bgw_library_name, MAXPGPATH, "tasks");
+    snprintf(worker.bgw_function_name, BGW_MAXLEN, "TaskRunnerMain");
+    snprintf(worker.bgw_type, BGW_MAXLEN, "Task Runner");
+    worker.bgw_notify_pid = 0;
+    worker.bgw_main_arg = 0; /* This should be the DSM segment handle */
+
+    foreach (lc, dblist) {
+      char *dbname = lfirst(lc);
+
+      for (int i = 1; i <= TaskTotalRunners; i++) {
+        snprintf(worker.bgw_name, BGW_MAXLEN, "%s %d", worker.bgw_type, i);
+        strncpy(args.dbname, dbname, sizeof(args.dbname));
+        memcpy(worker.bgw_extra, &args, sizeof(args));
+        RegisterBackgroundWorker(&worker);
+      }
     }
   }
 }
