@@ -22,7 +22,11 @@ compile_commands.json
 *.a
 *.lib
 
+# Files from tools
+.cache/
+
 # PGXS files
-results/**
+results/
 regression.diffs
 regression.out
+compile_commands.json
