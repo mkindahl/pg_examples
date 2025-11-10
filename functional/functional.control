@@ -1,0 +1,3 @@
+comment = 'Extension with functional programming-style gadgets'
+default_version = '0.1'
+module_pathname = '$libdir/sorting'

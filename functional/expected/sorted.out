@@ -1,0 +1,63 @@
+create table my_sample(ident int, primary key (ident));
+create index my_sample_ident on my_sample(ident);
+\d my_sample
+             Table "public.my_sample"
+ Column |  Type   | Collation | Nullable | Default 
+--------+---------+-----------+----------+---------
+ ident  | integer |           | not null | 
+Indexes:
+    "my_sample_pkey" PRIMARY KEY, btree (ident)
+    "my_sample_ident" btree (ident)
+
+insert into my_sample
+select ident from generate_series(1,20) ident order by random();
+select * from sorted('my_sample', 'my_sample_pkey') t(ident int);
+ ident 
+-------
+     1
+     2
+     3
+     4
+     5
+     6
+     7
+     8
+     9
+    10
+    11
+    12
+    13
+    14
+    15
+    16
+    17
+    18
+    19
+    20
+(20 rows)
+
+select * from sorted('my_sample', 'my_sample_ident') t(ident int);
+ ident 
+-------
+     1
+     2
+     3
+     4
+     5
+     6
+     7
+     8
+     9
+    10
+    11
+    12
+    13
+    14
+    15
+    16
+    17
+    18
+    19
+    20
+(20 rows)
+
