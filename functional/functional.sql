@@ -4,3 +4,6 @@
 -- Function to sort rows in a table using an index.
 create function sorted(regclass, regclass) returns setof record
 as '$libdir/functional', 'sorted_by_index' language c;
+
+create function sorted(regclass) returns setof record
+as '$libdir/functional', 'sorted_by_replica_identity' language c;

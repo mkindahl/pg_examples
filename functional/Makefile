@@ -15,4 +15,7 @@ include $(PGXS)
 functional--$(VERSION_functional).sql: functional.sql
 	cp $< $@
 
+debug.o: debug.c debug.h
 functional.o: functional.c
+sorting.o: sorting.c debug.h
+

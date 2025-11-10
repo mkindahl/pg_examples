@@ -1,63 +1,147 @@
-create table my_sample(ident int, primary key (ident));
-create index my_sample_ident on my_sample(ident);
+create extension pgcrypto;
+select setseed(1.0);
+ setseed 
+---------
+ 
+(1 row)
+
+create table my_sample (
+    ident int not null,
+    created_at timestamptz not null,
+    value int,
+    primary key (ident)
+);
+-- non-unique index
+create index my_sample_idx1 on my_sample (value);
+-- unique index for replica identity
+create unique index my_sample_idx2 on my_sample (created_at);
 \d my_sample
-             Table "public.my_sample"
- Column |  Type   | Collation | Nullable | Default 
---------+---------+-----------+----------+---------
- ident  | integer |           | not null | 
+                        Table "public.my_sample"
+   Column   |           Type           | Collation | Nullable | Default 
+------------+--------------------------+-----------+----------+---------
+ ident      | integer                  |           | not null | 
+ created_at | timestamp with time zone |           | not null | 
+ value      | integer                  |           |          | 
 Indexes:
     "my_sample_pkey" PRIMARY KEY, btree (ident)
-    "my_sample_ident" btree (ident)
+    "my_sample_idx1" btree (value)
+    "my_sample_idx2" UNIQUE, btree (created_at)
 
 insert into my_sample
-select ident from generate_series(1,20) ident order by random();
-select * from sorted('my_sample', 'my_sample_pkey') t(ident int);
- ident 
--------
-     1
-     2
-     3
-     4
-     5
-     6
-     7
-     8
-     9
-    10
-    11
-    12
-    13
-    14
-    15
-    16
-    17
-    18
-    19
-    20
+select ident,
+       '2025-11-11 07:30:00'::timestamptz + 1000 * random() * '1 microsecond'::interval,
+       1000 * random()
+from generate_series(1, 20) ident order by random() on conflict do nothing;
+select * from sorted ('my_sample', 'my_sample_pkey') t (ident int, ts timestamptz, value int);
+ ident |                 ts                  | value 
+-------+-------------------------------------+-------
+     1 | Tue Nov 11 07:30:00.000398 2025 PST |   398
+     2 | Tue Nov 11 07:30:00.000744 2025 PST |   744
+     3 | Tue Nov 11 07:30:00.000388 2025 PST |   388
+     4 | Tue Nov 11 07:30:00.000411 2025 PST |   411
+     5 | Tue Nov 11 07:30:00.000552 2025 PST |   552
+     6 | Tue Nov 11 07:30:00.000527 2025 PST |   527
+     7 | Tue Nov 11 07:30:00.000062 2025 PST |    62
+     8 | Tue Nov 11 07:30:00.000827 2025 PST |   827
+     9 | Tue Nov 11 07:30:00.000569 2025 PST |   569
+    10 | Tue Nov 11 07:30:00.000731 2025 PST |   731
+    11 | Tue Nov 11 07:30:00.000275 2025 PST |   275
+    12 | Tue Nov 11 07:30:00.000797 2025 PST |   797
+    13 | Tue Nov 11 07:30:00.000752 2025 PST |   752
+    14 | Tue Nov 11 07:30:00.000662 2025 PST |   662
+    15 | Tue Nov 11 07:30:00.000216 2025 PST |   216
+    16 | Tue Nov 11 07:30:00.000227 2025 PST |   227
+    17 | Tue Nov 11 07:30:00.000682 2025 PST |   682
+    18 | Tue Nov 11 07:30:00.000697 2025 PST |   697
+    19 | Tue Nov 11 07:30:00.000223 2025 PST |   223
+    20 | Tue Nov 11 07:30:00.000903 2025 PST |   903
 (20 rows)
 
-select * from sorted('my_sample', 'my_sample_ident') t(ident int);
- ident 
--------
-     1
-     2
-     3
-     4
-     5
-     6
-     7
-     8
-     9
-    10
-    11
-    12
-    13
-    14
-    15
-    16
-    17
-    18
-    19
-    20
+select * from sorted ('my_sample', 'my_sample_idx1') t (ident int, ts timestamptz, value int);
+ ident |                 ts                  | value 
+-------+-------------------------------------+-------
+     7 | Tue Nov 11 07:30:00.000062 2025 PST |    62
+    15 | Tue Nov 11 07:30:00.000216 2025 PST |   216
+    19 | Tue Nov 11 07:30:00.000223 2025 PST |   223
+    16 | Tue Nov 11 07:30:00.000227 2025 PST |   227
+    11 | Tue Nov 11 07:30:00.000275 2025 PST |   275
+     3 | Tue Nov 11 07:30:00.000388 2025 PST |   388
+     1 | Tue Nov 11 07:30:00.000398 2025 PST |   398
+     4 | Tue Nov 11 07:30:00.000411 2025 PST |   411
+     6 | Tue Nov 11 07:30:00.000527 2025 PST |   527
+     5 | Tue Nov 11 07:30:00.000552 2025 PST |   552
+     9 | Tue Nov 11 07:30:00.000569 2025 PST |   569
+    14 | Tue Nov 11 07:30:00.000662 2025 PST |   662
+    17 | Tue Nov 11 07:30:00.000682 2025 PST |   682
+    18 | Tue Nov 11 07:30:00.000697 2025 PST |   697
+    10 | Tue Nov 11 07:30:00.000731 2025 PST |   731
+     2 | Tue Nov 11 07:30:00.000744 2025 PST |   744
+    13 | Tue Nov 11 07:30:00.000752 2025 PST |   752
+    12 | Tue Nov 11 07:30:00.000797 2025 PST |   797
+     8 | Tue Nov 11 07:30:00.000827 2025 PST |   827
+    20 | Tue Nov 11 07:30:00.000903 2025 PST |   903
 (20 rows)
 
+select * from sorted ('my_sample') t (ident int, ts timestamptz, value int);
+ ident |                 ts                  | value 
+-------+-------------------------------------+-------
+     1 | Tue Nov 11 07:30:00.000398 2025 PST |   398
+     2 | Tue Nov 11 07:30:00.000744 2025 PST |   744
+     3 | Tue Nov 11 07:30:00.000388 2025 PST |   388
+     4 | Tue Nov 11 07:30:00.000411 2025 PST |   411
+     5 | Tue Nov 11 07:30:00.000552 2025 PST |   552
+     6 | Tue Nov 11 07:30:00.000527 2025 PST |   527
+     7 | Tue Nov 11 07:30:00.000062 2025 PST |    62
+     8 | Tue Nov 11 07:30:00.000827 2025 PST |   827
+     9 | Tue Nov 11 07:30:00.000569 2025 PST |   569
+    10 | Tue Nov 11 07:30:00.000731 2025 PST |   731
+    11 | Tue Nov 11 07:30:00.000275 2025 PST |   275
+    12 | Tue Nov 11 07:30:00.000797 2025 PST |   797
+    13 | Tue Nov 11 07:30:00.000752 2025 PST |   752
+    14 | Tue Nov 11 07:30:00.000662 2025 PST |   662
+    15 | Tue Nov 11 07:30:00.000216 2025 PST |   216
+    16 | Tue Nov 11 07:30:00.000227 2025 PST |   227
+    17 | Tue Nov 11 07:30:00.000682 2025 PST |   682
+    18 | Tue Nov 11 07:30:00.000697 2025 PST |   697
+    19 | Tue Nov 11 07:30:00.000223 2025 PST |   223
+    20 | Tue Nov 11 07:30:00.000903 2025 PST |   903
+(20 rows)
+
+alter table my_sample replica identity using index my_sample_idx2;
+select * from sorted ('my_sample') t (ident int, ts timestamptz, value int);
+ ident |                 ts                  | value 
+-------+-------------------------------------+-------
+     7 | Tue Nov 11 07:30:00.000062 2025 PST |    62
+    15 | Tue Nov 11 07:30:00.000216 2025 PST |   216
+    19 | Tue Nov 11 07:30:00.000223 2025 PST |   223
+    16 | Tue Nov 11 07:30:00.000227 2025 PST |   227
+    11 | Tue Nov 11 07:30:00.000275 2025 PST |   275
+     3 | Tue Nov 11 07:30:00.000388 2025 PST |   388
+     1 | Tue Nov 11 07:30:00.000398 2025 PST |   398
+     4 | Tue Nov 11 07:30:00.000411 2025 PST |   411
+     6 | Tue Nov 11 07:30:00.000527 2025 PST |   527
+     5 | Tue Nov 11 07:30:00.000552 2025 PST |   552
+     9 | Tue Nov 11 07:30:00.000569 2025 PST |   569
+    14 | Tue Nov 11 07:30:00.000662 2025 PST |   662
+    17 | Tue Nov 11 07:30:00.000682 2025 PST |   682
+    18 | Tue Nov 11 07:30:00.000697 2025 PST |   697
+    10 | Tue Nov 11 07:30:00.000731 2025 PST |   731
+     2 | Tue Nov 11 07:30:00.000744 2025 PST |   744
+    13 | Tue Nov 11 07:30:00.000752 2025 PST |   752
+    12 | Tue Nov 11 07:30:00.000797 2025 PST |   797
+     8 | Tue Nov 11 07:30:00.000827 2025 PST |   827
+    20 | Tue Nov 11 07:30:00.000903 2025 PST |   903
+(20 rows)
+
+alter table my_sample replica identity full;
+\set ON_ERROR_STOP 0
+select * from sorted ('my_sample_idx2', 'my_sample') t (ident int, ts timestamptz, value int);
+ERROR:  cannot open relation "my_sample_idx2"
+DETAIL:  This operation is not supported for indexes.
+select * from sorted ('my_sample', 'my_sample_idx3') t (ident int, ts timestamptz, value int);
+ERROR:  relation "my_sample_idx3" does not exist
+LINE 1: select * from sorted ('my_sample', 'my_sample_idx3') t (iden...
+                                           ^
+select * from sorted ('my_sample') t (ident int, ts timestamptz, value int);
+ERROR:  relation "my_sample" does not have a replica identity index
+\set ON_ERROR_STOP 1

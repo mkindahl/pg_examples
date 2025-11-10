@@ -16,7 +16,11 @@
 
 #include "debug.h"
 
+PG_FUNCTION_INFO_V1(sorted_by_replica_identity);
 PG_FUNCTION_INFO_V1(sorted_by_index);
+
+static Datum sorted_by_index_internal(FunctionCallInfo fcinfo, Relation rel,
+                                      Relation idx);
 
 /*
  * Sort the actual tuples.
@@ -93,16 +97,41 @@ static HeapTuple rewrite_tuple(HeapTuple tuple, TupleDesc tupdesc) {
 }
 
 /*
+ * Function that returns a sorted result set based on the replica identity.
+ *
+ * Intended as an example for how to use tuple-sort with clustering.
+ */
+Datum sorted_by_replica_identity(PG_FUNCTION_ARGS) {
+  Relation rel, idx;
+  Oid idxoid;
+
+  rel = table_open(PG_GETARG_OID(0), AccessShareLock);
+  idxoid = RelationGetReplicaIndex(rel);
+
+  if (!OidIsValid(idxoid))
+    ereport(ERROR,
+            errmsg("relation \"%s\" does not have a replica identity index",
+                   RelationGetRelationName(rel)));
+
+  idx = index_open(idxoid, AccessExclusiveLock);
+
+  return sorted_by_index_internal(fcinfo, rel, idx);
+}
+
+/*
  * Function that returns a sorted result set based on an index.
  *
  * Intended as an example for how to use tuple-sort with clustering.
  */
 Datum sorted_by_index(PG_FUNCTION_ARGS) {
-  Oid reloid = PG_GETARG_OID(0);
-  Oid idxoid = PG_GETARG_OID(1);
-  Relation rel = table_open(reloid, AccessShareLock);
-  Relation idx = index_open(idxoid, AccessExclusiveLock);
+  Relation rel = table_open(PG_GETARG_OID(0), AccessShareLock);
+  Relation idx = index_open(PG_GETARG_OID(1), AccessExclusiveLock);
 
+  return sorted_by_index_internal(fcinfo, rel, idx);
+}
+
+static Datum sorted_by_index_internal(FunctionCallInfo fcinfo, Relation rel,
+                                      Relation idx) {
   Tuplesortstate* tuplesort;
   FuncCallContext* funcctx;
   TupleDesc tupdesc;
