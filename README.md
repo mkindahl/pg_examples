@@ -22,4 +22,6 @@ make installcheck
   background worker regularly.
 * [Extension `simple`](simple/README.md) demonstrates a problem with
   permissions and extensions that was brought up in `pgsql-bugs`
+* [Extension `memview`](memview/README.md) is an example of how to
+  write a memory-resident view that can be modified.
 
