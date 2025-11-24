@@ -1,0 +1,5 @@
+comment = 'Task runner implementation'
+default_version = '0.1'
+module_pathname = '$libdir/tasks.so'
+relocatable = false
+schema = 'tasks'
