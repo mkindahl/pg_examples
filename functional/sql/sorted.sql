@@ -22,19 +22,19 @@ select ident,
        1000 * random()
 from generate_series(1, 20) ident order by random() on conflict do nothing;
 
-select * from sorted ('my_sample', 'my_sample_pkey') t (ident int, ts timestamptz, value int);
-select * from sorted ('my_sample', 'my_sample_idx1') t (ident int, ts timestamptz, value int);
-select * from sorted ('my_sample') t (ident int, ts timestamptz, value int);
+select * from sorted('my_sample', 'my_sample_pkey') t(ident int, ts timestamptz, value int);
+select * from sorted('my_sample', 'my_sample_idx1') t(ident int, ts timestamptz, value int);
+select * from sorted('my_sample') t(ident int, ts timestamptz, value int);
 
 alter table my_sample replica identity using index my_sample_idx2;
 
-select * from sorted ('my_sample') t (ident int, ts timestamptz, value int);
+select * from sorted('my_sample') t(ident int, ts timestamptz, value int);
 
 alter table my_sample replica identity full;
 
 \set ON_ERROR_STOP 0
-select * from sorted ('my_sample_idx2', 'my_sample') t (ident int, ts timestamptz, value int);
-select * from sorted ('my_sample', 'my_sample_idx3') t (ident int, ts timestamptz, value int);
-select * from sorted ('my_sample') t (ident int, ts timestamptz, value int);
+select * from sorted('my_sample_idx2', 'my_sample') t(ident int, ts timestamptz, value int);
+select * from sorted('my_sample', 'my_sample_idx3') t(ident int, ts timestamptz, value int);
+select * from sorted('my_sample') t(ident int, ts timestamptz, value int);
 \set ON_ERROR_STOP 1
 
