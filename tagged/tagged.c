@@ -67,6 +67,8 @@ Datum tagged_out(PG_FUNCTION_ARGS) {
   Any* val = (Any*)PG_GETARG_POINTER(0);
   StringInfoData str;
 
+  initStringInfo(&str);
+
   switch (val->hdr.tag) {
     case HASH_TAG:
       appendStringInfo(&str, "hash/%s/%d", NameStr(val->hash.attname),
@@ -77,7 +79,7 @@ Datum tagged_out(PG_FUNCTION_ARGS) {
       appendStringInfo(
           &str, "range/%s/%s", NameStr(val->range.attname),
           DatumGetCString(DirectFunctionCall1(
-              interval_out, PointerGetDatum(&val->range.interval))));
+              interval_out, PointerGetDatum(val->range.interval))));
       break;
 
     case UNDEF_TAG:
